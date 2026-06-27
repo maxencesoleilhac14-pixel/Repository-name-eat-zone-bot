@@ -158,18 +158,9 @@ async def make_cuisto_overwrites(bot, guild: discord.Guild, user: discord.Member
         user: discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True),
         guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True, read_message_history=True),
     }
-    role_ids = (
-        bot.settings.maitre_cuisto_role_id,
-        bot.settings.staff_role_id,
-        bot.settings.second_staff_role_id,
-        bot.settings.third_staff_role_id,
-    )
-    for role_id in role_ids:
-        if not role_id:
-            continue
-        role = guild.get_role(role_id)
-        if role:
-            overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
+    chef_role = guild.get_role(bot.settings.maitre_cuisto_role_id) if bot.settings.maitre_cuisto_role_id else None
+    if chef_role:
+        overwrites[chef_role] = discord.PermissionOverwrite(view_channel=True, send_messages=True, read_message_history=True)
     for role_id in bot.settings.admin_role_ids:
         role = guild.get_role(role_id)
         if role:
@@ -192,15 +183,8 @@ def is_cuisto_staff(bot, member: discord.Member) -> bool:
     for role_id in founder_ids:
         if member.get_role(role_id):
             return True
-    role_ids = (
-        bot.settings.maitre_cuisto_role_id,
-        bot.settings.staff_role_id,
-        bot.settings.second_staff_role_id,
-        bot.settings.third_staff_role_id,
-    )
-    for role_id in role_ids:
-        if role_id and member.get_role(role_id):
-            return True
+    if bot.settings.maitre_cuisto_role_id and member.get_role(bot.settings.maitre_cuisto_role_id):
+        return True
     return False
 
 
@@ -270,6 +254,10 @@ class CuistoPanelView(discord.ui.View):
                 "\u26a0\ufe0f **Requis :**\n"
                 "\u2022 Detenteur de la **Tech Uber** obligatoire\n"
                 "\u2022 Si tu ne l'as pas : <#1514065238243414066>\n\n"
+                "\U0001f4b0 **Infos importantes :**\n"
+                "\u2022 Les **frais de carte ou de compte** restent a **ta charge**\n"
+                "\u2022 Les **codes promo** sont selon **ton grade** (plus ton grade est eleve, meilleure est la reduction)\n"
+                "\u2022 C'est **toi qui geres le retrait de ton argent**\n\n"
                 f"\U0001f447 Semaine **{week_count}** -> {next_level}"
             ),
             color=CUISTO_COLOR,
@@ -277,11 +265,11 @@ class CuistoPanelView(discord.ui.View):
         embed.add_field(name="Client", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=False)
         embed.add_field(name="Statut", value="En attente de paiement", inline=False)
 
-        maitre_role = interaction.guild.get_role(bot.settings.maitre_cuisto_role_id) if bot.settings.maitre_cuisto_role_id else None
-        mention = maitre_role.mention if maitre_role else "@staff"
+        chef_role = interaction.guild.get_role(bot.settings.maitre_cuisto_role_id) if bot.settings.maitre_cuisto_role_id else None
+        mention = chef_role.mention if chef_role else "@Chef Cuisto"
         await channel.send(mention)
         await channel.send(embed=embed, view=CuistoTicketView(price=price, week_number=week_count))
-        await channel.send(f"{interaction.user.mention} ton ticket cuisto est ouvert ! Un staff va s'occuper de toi.")
+        await channel.send(f"{interaction.user.mention} ton ticket cuisto est ouvert ! Un Fondateur ou Chef Cuisto va s'occuper de toi.")
         await interaction.response.send_message(f"\u2705 Ticket cree : {channel.mention}", ephemeral=True)
 
 
