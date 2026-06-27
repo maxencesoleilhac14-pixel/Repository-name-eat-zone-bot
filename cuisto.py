@@ -293,15 +293,11 @@ class CuistoTicketView(discord.ui.View):
     @discord.ui.button(label="Paysafecard", style=discord.ButtonStyle.secondary, emoji="\U0001f4b0", custom_id="ez:cuisto:ticket:paysafe")
     async def paysafe(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         bot: commands.Bot = interaction.client
-        if not _is_staff(bot, interaction):
-            return
         await interaction.response.send_modal(CuistoPaysafeModal(self.price, self.week_number))
 
     @discord.ui.button(label="Crypto (auto)", style=discord.ButtonStyle.secondary, emoji="\U0001fa99", custom_id="ez:cuisto:ticket:crypto")
     async def crypto(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         bot: commands.Bot = interaction.client
-        if not _is_staff(bot, interaction):
-            return
         try:
             payment_url, external_id = await create_cuisto_oxapay_invoice(bot.settings, self.price, interaction.user.id)
         except RuntimeError as error:
@@ -356,8 +352,6 @@ class CuistoTicketView(discord.ui.View):
 
     async def _send_payment(self, interaction: discord.Interaction, label: str, link: str, text: str, color: int) -> None:
         bot: commands.Bot = interaction.client
-        if not _is_staff(bot, interaction):
-            return
         embed = discord.Embed(title=f"Paiement {label} - Abonnement Cuisto", color=color)
         embed.description = (
             f"Montant a payer : **{self.price:.2f} EUR**\n\n"
