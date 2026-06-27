@@ -265,8 +265,9 @@ class CuistoPanelView(discord.ui.View):
         embed.add_field(name="Client", value=f"{interaction.user.mention}\n`{interaction.user.id}`", inline=False)
         embed.add_field(name="Statut", value="En attente de paiement", inline=False)
 
-        chef_role = interaction.guild.get_role(bot.settings.maitre_cuisto_role_id) if bot.settings.maitre_cuisto_role_id else None
-        mention = chef_role.mention if chef_role else "@Chef Cuisto"
+        founder_ids = getattr(bot.settings, 'founder_role_ids', ())
+        founder_role = interaction.guild.get_role(founder_ids[0]) if founder_ids else None
+        mention = founder_role.mention if founder_role else "@Fondateur"
         await channel.send(mention)
         await channel.send(embed=embed, view=CuistoTicketView(price=price, week_number=week_count))
         await channel.send(f"{interaction.user.mention} ton ticket cuisto est ouvert ! Un Fondateur ou Chef Cuisto va s'occuper de toi.")
