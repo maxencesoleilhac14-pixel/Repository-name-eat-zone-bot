@@ -244,6 +244,7 @@ class Database:
                 resale_amount REAL NOT NULL DEFAULT 0,
                 profit_amount REAL NOT NULL DEFAULT 0,
                 salary_amount REAL NOT NULL DEFAULT 0,
+                fee_amount REAL NOT NULL DEFAULT 0,
                 transcript_path TEXT,
                 payout_paid_at TEXT,
                 created_at TEXT NOT NULL,
@@ -296,6 +297,11 @@ class Database:
             """
         )
         self.conn.commit()
+        try:
+            self.conn.execute("ALTER TABLE tickets ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0")
+            self.conn.commit()
+        except Exception:
+            pass
 
     def create_ticket(
         self,
@@ -759,6 +765,7 @@ async def create_order_ticket(
     amount_ht: float,
     amount_ttc: float,
     payment_method: str,
+    fee_amount: float = 0,
 ) -> None:
     assert interaction.guild and isinstance(interaction.user, discord.Member)
     if await is_influence_off(bot, interaction.guild):
@@ -775,6 +782,9 @@ async def create_order_ticket(
         amount_ttc=amount_ttc,
         payment_method=payment_method,
     )
+    if fee_amount > 0:
+        bot.db.conn.execute("UPDATE tickets SET fee_amount = ? WHERE id = ?", (fee_amount, ticket_id))
+        bot.db.conn.commit()
     category = await find_or_create_category(
         interaction.guild,
         configured_id=bot.settings.ticket_pending_category_id or bot.settings.ticket_category_id,
@@ -796,6 +806,8 @@ async def create_order_ticket(
     embed.add_field(name="Montant HT", value=f"`{money(amount_ht)}`", inline=True)
     embed.add_field(name="Montant TTC", value=f"`{money(amount_ttc)}`", inline=True)
     embed.add_field(name="Paiement", value=f"```{payment_method}```", inline=True)
+    if fee_amount > 0:
+        embed.add_field(name="Frais", value=f"`{money(fee_amount)}`", inline=True)
     embed.add_field(name="Statut", value="`En attente`", inline=False)
     await channel.send(ticket_mentions(bot, "order"), embed=embed, view=TicketControlsView())
     await channel.send(f"{interaction.user.mention} ton ticket est ouvert ici. Un cuisto peut le claim quand il est prêt.")
@@ -940,6 +952,7 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
     amount_ht = discord.ui.TextInput(label="Montant du panier HT", placeholder="Ex: 25.50", max_length=20)
     amount_ttc = discord.ui.TextInput(label="Montant du panier TTC", placeholder="Ex: 30.60", max_length=20)
     payment = discord.ui.TextInput(label="Moyen de paiement", placeholder="PayPal, Revolut, crypto...", max_length=80)
+    frais = discord.ui.TextInput(label="Frais (optionnel)", placeholder="Ex: 2.50 ou laisser vide", max_length=20, required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         bot: EatZoneBot = interaction.client  # type: ignore[assignment]
@@ -949,6 +962,8 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
         except ValueError:
             await interaction.response.send_message("❌ Montant invalide.", ephemeral=True)
             return
+        fee_raw = str(self.frais).strip()
+        fee_amount = parse_amount(fee_raw) if fee_raw else 0.0
         await interaction.response.defer(ephemeral=True, thinking=True)
         await create_order_ticket(
             bot,
@@ -958,6 +973,7 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
             amount_ht=ht,
             amount_ttc=ttc,
             payment_method=str(self.payment),
+            fee_amount=fee_amount,
         )
 
 
@@ -1846,12 +1862,15 @@ async def close_current_ticket(
         profit_amount=profit,
         salary_amount=0,
     )
+    fee_amount = ticket["fee_amount"] or 0
     summary = discord.Embed(title=f"Ticket fermé #{ticket['id']}", color=0xE74C3C)
     if blank:
         summary.description = "Commande blanche / sans transaction."
     else:
         summary.add_field(name="Commande brute", value=money(order_cost), inline=True)
         summary.add_field(name="Revente client", value=money(resale_amount), inline=True)
+        if fee_amount > 0:
+            summary.add_field(name="Frais", value=money(fee_amount), inline=True)
         summary.add_field(name="Bénéfice (100% cuisto)", value=money(profit), inline=True)
     if interaction.response.is_done():
         await interaction.followup.send(embed=summary, ephemeral=True)
@@ -1897,6 +1916,10 @@ async def send_transcript(bot: EatZoneBot, interaction: discord.Interaction, pat
         pass
 
 
+SERVICE_ROLE_ID = 1506032220660301838
+SERVICE_CHANNEL_ID = 1510357586459758803
+
+
 class InfluenceView(discord.ui.View):
     def __init__(self) -> None:
         super().__init__(timeout=None)
@@ -1912,6 +1935,40 @@ class InfluenceView(discord.ui.View):
     @discord.ui.button(label="Dispo", style=discord.ButtonStyle.success, emoji="🟢", custom_id="ez:inf:dispo")
     async def dispo(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await set_influence(interaction, "DISPO", "🟢")
+
+    @discord.ui.button(label="Prendre service", style=discord.ButtonStyle.success, emoji="✅", custom_id="ez:service:start")
+    async def start_service(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Commande serveur uniquement.", ephemeral=True)
+            return
+        guild = interaction.guild
+        if not guild:
+            return
+        channel = guild.get_channel(SERVICE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Salon de service introuvable.", ephemeral=True)
+            return
+        role = guild.get_role(SERVICE_ROLE_ID)
+        ping = role.mention if role else f"<@&{SERVICE_ROLE_ID}>"
+        await channel.send(f"{ping} **{interaction.user.display_name}** a pris son service et est dispo pour vos commandes !")
+        await interaction.response.send_message("✅ Message de prise de service envoyé.", ephemeral=True)
+
+    @discord.ui.button(label="Quitter", style=discord.ButtonStyle.danger, emoji="🚪", custom_id="ez:service:end")
+    async def end_service(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        if not isinstance(interaction.user, discord.Member):
+            await interaction.response.send_message("❌ Commande serveur uniquement.", ephemeral=True)
+            return
+        guild = interaction.guild
+        if not guild:
+            return
+        channel = guild.get_channel(SERVICE_CHANNEL_ID)
+        if not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Salon de service introuvable.", ephemeral=True)
+            return
+        role = guild.get_role(SERVICE_ROLE_ID)
+        ping = role.mention if role else f"<@&{SERVICE_ROLE_ID}>"
+        await channel.send(f"{ping} **{interaction.user.display_name}** a quitté son service. Merci pour ton travail !")
+        await interaction.response.send_message("✅ Message de fin de service envoyé.", ephemeral=True)
 
 
 async def set_influence(interaction: discord.Interaction, status: str, emoji: str) -> None:
@@ -2213,12 +2270,15 @@ async def close_current_ticket(
         salary_amount=0,
     )
 
+    fee_amount = ticket["fee_amount"] or 0
     summary = discord.Embed(title=f"Ticket fermé #{ticket['id']}", color=0xE74C3C)
     if blank:
         summary.description = "Commande blanche / sans transaction."
     else:
         summary.add_field(name="Commande brute", value=money(order_cost), inline=True)
         summary.add_field(name="Revente client", value=money(resale_amount), inline=True)
+        if fee_amount > 0:
+            summary.add_field(name="Frais", value=money(fee_amount), inline=True)
         summary.add_field(name="Benefice (100% cuisto)", value=money(profit), inline=True)
     if interaction.response.is_done():
         await interaction.followup.send(embed=summary, ephemeral=True)
@@ -2527,6 +2587,34 @@ async def crypto(interaction: discord.Interaction, montant: str) -> None:
     await interaction.channel.send(embed=embed)
 
 
+@bot.tree.command(name="frais", description="Ajoute des frais au ticket (ex: frais Uber, service, etc.).")
+async def frais(interaction: discord.Interaction, montant: str, raison: str = "") -> None:
+    if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
+        await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+        return
+    ticket = await ensure_ticket_command(interaction)
+    if not ticket:
+        return
+    try:
+        amount = parse_amount(montant)
+    except ValueError:
+        await interaction.response.send_message("❌ Montant invalide.", ephemeral=True)
+        return
+    if amount < 0:
+        await interaction.response.send_message("❌ Le montant ne peut pas être négatif.", ephemeral=True)
+        return
+    current_fees = ticket["fee_amount"] or 0
+    new_fees = current_fees + amount
+    bot.db.conn.execute("UPDATE tickets SET fee_amount = ? WHERE id = ?", (new_fees, ticket["id"]))
+    bot.db.conn.commit()
+    lines = [f"💸 **Frais ajoutés :** `{money(amount)}`", f"**Total des frais :** `{money(new_fees)}`"]
+    if raison:
+        lines.append(f"**Raison :** {raison}")
+    embed = discord.Embed(title="Frais ajoutés au ticket", description="\n".join(lines), color=0xE67E22)
+    await interaction.response.send_message("✅ Frais ajoutés.", ephemeral=True)
+    await interaction.channel.send(embed=embed)
+
+
 @bot.tree.command(name="confirm", description="Confirme manuellement le paiement du ticket.")
 async def confirm(interaction: discord.Interaction) -> None:
     if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
@@ -2754,6 +2842,9 @@ async def resume(interaction: discord.Interaction) -> None:
         lines.append(f"Montant TTC : {money(ticket['amount_ttc'])}")
     if ticket["payment_method"]:
         lines.append(f"Paiement : {ticket['payment_method']}")
+    fee_amount = ticket["fee_amount"] or 0
+    if fee_amount > 0:
+        lines.append(f"Frais : {money(fee_amount)}")
 
     await interaction.response.send_message("```\n" + "\n".join(lines) + "\n```", ephemeral=True)
 
