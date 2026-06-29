@@ -294,11 +294,40 @@ class Database:
                 expires_at TEXT,
                 created_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS user_fees (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                user_name TEXT NOT NULL DEFAULT '',
+                amount REAL NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'unpaid',
+                created_by INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                paid_at TEXT
+            );
             """
         )
         self.conn.commit()
         try:
             self.conn.execute("ALTER TABLE tickets ADD COLUMN fee_amount REAL NOT NULL DEFAULT 0")
+            self.conn.commit()
+        except Exception:
+            pass
+        try:
+            self.conn.executescript("""
+                CREATE TABLE IF NOT EXISTS user_fees (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    user_name TEXT NOT NULL DEFAULT '',
+                    amount REAL NOT NULL,
+                    reason TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'unpaid',
+                    created_by INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL,
+                    paid_at TEXT
+                )
+            """)
             self.conn.commit()
         except Exception:
             pass
@@ -811,6 +840,20 @@ async def create_order_ticket(
     embed.add_field(name="Statut", value="`En attente`", inline=False)
     await channel.send(ticket_mentions(bot, "order"), embed=embed, view=TicketControlsView())
     await channel.send(f"{interaction.user.mention} ton ticket est ouvert ici. Un cuisto peut le claim quand il est prêt.")
+    unpaid = bot.db.conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM user_fees WHERE user_id = ? AND status = 'unpaid'",
+        (interaction.user.id,),
+    ).fetchone()[0]
+    if unpaid and float(unpaid) > 0:
+        rows = bot.db.conn.execute(
+            "SELECT amount, reason, created_at FROM user_fees WHERE user_id = ? AND status = 'unpaid' ORDER BY created_at ASC",
+            (interaction.user.id,),
+        ).fetchall()
+        lines = [f"🔴 **{interaction.user.mention} a des frais impayés :**"]
+        for r in rows:
+            lines.append(f"• {money(r['amount'])} - {r['reason']} ({r['created_at'][:10]})")
+        lines.append(f"\n**Total dû : {money(float(unpaid))}**")
+        await channel.send("\n".join(lines))
     await send_ephemeral(interaction, f"✅ Ticket créé : {channel.mention}")
 
 
@@ -2588,8 +2631,7 @@ async def frais(interaction: discord.Interaction, client: discord.Member, montan
     if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
         await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
         return
-    if not isinstance(interaction.channel, discord.TextChannel):
-        await interaction.response.send_message("❌ Commande uniquement dans un ticket.", ephemeral=True)
+    if not interaction.guild:
         return
     try:
         amount = parse_amount(montant)
@@ -2599,6 +2641,12 @@ async def frais(interaction: discord.Interaction, client: discord.Member, montan
     if amount < 0:
         await interaction.response.send_message("❌ Le montant ne peut pas être négatif.", ephemeral=True)
         return
+    now = now_iso()
+    bot.db.conn.execute(
+        "INSERT INTO user_fees (user_id, user_name, amount, reason, status, created_by, created_at) VALUES (?, ?, ?, ?, 'unpaid', ?, ?)",
+        (client.id, str(client), amount, raison, interaction.user.id, now),
+    )
+    bot.db.conn.commit()
     embed = discord.Embed(title="💸 Frais ajoutés", color=0xE74C3C)
     embed.add_field(name="Client", value=client.mention, inline=False)
     embed.add_field(name="Montant", value=money(amount), inline=True)
@@ -2606,9 +2654,51 @@ async def frais(interaction: discord.Interaction, client: discord.Member, montan
     embed.set_footer(text=f"Ajouté par {interaction.user.display_name}")
     await interaction.response.send_message(embed=embed)
     try:
-        await client.send(f"💸 **Des frais de {money(amount)}** ont été ajoutés à ton ticket.\n**Raison :** {raison}")
+        await client.send(f"💸 **Des frais de {money(amount)}** t'ont été facturés.\n**Raison :** {raison}\nCes frais te seront rappelés à ta prochaine commande.")
     except discord.DiscordException:
         pass
+
+
+@bot.tree.command(name="frais_list", description="Liste tous les clients avec des frais impayés.")
+async def frais_list(interaction: discord.Interaction) -> None:
+    if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
+        await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+        return
+    rows = bot.db.conn.execute(
+        "SELECT user_id, user_name, SUM(amount) as total, COUNT(*) as count FROM user_fees WHERE status = 'unpaid' GROUP BY user_id ORDER BY total DESC"
+    ).fetchall()
+    if not rows:
+        await interaction.response.send_message("✅ Aucun frais impayé.", ephemeral=True)
+        return
+    lines = ["**💸 Frais impayés :**"]
+    for r in rows:
+        lines.append(f"• <@{r['user_id']}> - {money(r['total'])} ({r['count']} frais)")
+    await interaction.response.send_message("\n".join(lines), ephemeral=True)
+
+
+@bot.tree.command(name="frais_payer", description="Marque les frais d'un client comme payés.")
+async def frais_payer(interaction: discord.Interaction, client: discord.Member) -> None:
+    if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
+        await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
+        return
+    total = bot.db.conn.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM user_fees WHERE user_id = ? AND status = 'unpaid'",
+        (client.id,),
+    ).fetchone()[0]
+    if not total or float(total) <= 0:
+        await interaction.response.send_message("✅ Ce client n'a aucun frais impayé.", ephemeral=True)
+        return
+    now = now_iso()
+    bot.db.conn.execute(
+        "UPDATE user_fees SET status = 'paid', paid_at = ? WHERE user_id = ? AND status = 'unpaid'",
+        (now, client.id),
+    )
+    bot.db.conn.commit()
+    embed = discord.Embed(title="✅ Frais marqués comme payés", color=0x2ECC71)
+    embed.add_field(name="Client", value=client.mention, inline=False)
+    embed.add_field(name="Montant total", value=money(float(total)), inline=True)
+    embed.set_footer(text=f"Par {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
 
 
 @bot.tree.command(name="confirm", description="Confirme manuellement le paiement du ticket.")
