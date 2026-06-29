@@ -2583,13 +2583,13 @@ async def crypto(interaction: discord.Interaction, montant: str) -> None:
     await interaction.channel.send(embed=embed)
 
 
-@bot.tree.command(name="frais", description="Ajoute des frais au ticket (ex: frais Uber, service, etc.).")
-async def frais(interaction: discord.Interaction, montant: str, raison: str = "") -> None:
+@bot.tree.command(name="frais", description="Ajoute des frais à un mauvais client.")
+async def frais(interaction: discord.Interaction, client: discord.Member, montant: str, raison: str) -> None:
     if not isinstance(interaction.user, discord.Member) or not can_handle_orders(bot, interaction.user):
         await interaction.response.send_message("❌ Réservé au staff.", ephemeral=True)
         return
-    ticket = await ensure_ticket_command(interaction)
-    if not ticket:
+    if not isinstance(interaction.channel, discord.TextChannel):
+        await interaction.response.send_message("❌ Commande uniquement dans un ticket.", ephemeral=True)
         return
     try:
         amount = parse_amount(montant)
@@ -2599,16 +2599,16 @@ async def frais(interaction: discord.Interaction, montant: str, raison: str = ""
     if amount < 0:
         await interaction.response.send_message("❌ Le montant ne peut pas être négatif.", ephemeral=True)
         return
-    current_fees = ticket["fee_amount"] or 0
-    new_fees = current_fees + amount
-    bot.db.conn.execute("UPDATE tickets SET fee_amount = ? WHERE id = ?", (new_fees, ticket["id"]))
-    bot.db.conn.commit()
-    lines = [f"💸 **Frais ajoutés :** `{money(amount)}`", f"**Total des frais :** `{money(new_fees)}`"]
-    if raison:
-        lines.append(f"**Raison :** {raison}")
-    embed = discord.Embed(title="Frais ajoutés au ticket", description="\n".join(lines), color=0xE67E22)
-    await interaction.response.send_message("✅ Frais ajoutés.", ephemeral=True)
-    await interaction.channel.send(embed=embed)
+    embed = discord.Embed(title="💸 Frais ajoutés", color=0xE74C3C)
+    embed.add_field(name="Client", value=client.mention, inline=False)
+    embed.add_field(name="Montant", value=money(amount), inline=True)
+    embed.add_field(name="Raison", value=raison, inline=False)
+    embed.set_footer(text=f"Ajouté par {interaction.user.display_name}")
+    await interaction.response.send_message(embed=embed)
+    try:
+        await client.send(f"💸 **Des frais de {money(amount)}** ont été ajoutés à ton ticket.\n**Raison :** {raison}")
+    except discord.DiscordException:
+        pass
 
 
 @bot.tree.command(name="confirm", description="Confirme manuellement le paiement du ticket.")
