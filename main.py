@@ -952,7 +952,6 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
     amount_ht = discord.ui.TextInput(label="Montant du panier HT", placeholder="Ex: 25.50", max_length=20)
     amount_ttc = discord.ui.TextInput(label="Montant du panier TTC", placeholder="Ex: 30.60", max_length=20)
     payment = discord.ui.TextInput(label="Moyen de paiement", placeholder="PayPal, Revolut, crypto...", max_length=80)
-    frais = discord.ui.TextInput(label="Frais (optionnel)", placeholder="Ex: 2.50 ou laisser vide", max_length=20, required=False)
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         bot: EatZoneBot = interaction.client  # type: ignore[assignment]
@@ -962,8 +961,6 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
         except ValueError:
             await interaction.response.send_message("❌ Montant invalide.", ephemeral=True)
             return
-        fee_raw = str(self.frais).strip()
-        fee_amount = parse_amount(fee_raw) if fee_raw else 0.0
         await interaction.response.defer(ephemeral=True, thinking=True)
         await create_order_ticket(
             bot,
@@ -973,7 +970,6 @@ class OrderModal(discord.ui.Modal, title="Formulaire de Commande"):
             amount_ht=ht,
             amount_ttc=ttc,
             payment_method=str(self.payment),
-            fee_amount=fee_amount,
         )
 
 
